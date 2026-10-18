@@ -88,7 +88,7 @@ that later crash): `ready epoch=.. resumed_from=.. restore_s=..`,
   checkpoint iteration) times the measured time per iteration. Column lost_compute_s.
 - **Failure detection + teardown (S02)**: per crashed attempt, time from the last safe point to the
   crashed mpirun exiting, minus lost compute. This is Open MPI noticing the killed rank and aborting
-  the others (about 1 s per failure in our tests). Column detect_teardown_s.
+  the others (about 0.5 s per failure on the Mac). Column detect_teardown_s.
 - **lost_work_s keeps its S01 meaning** (all wall time in crashed attempts), so S01 and S02 rows can
   be compared. With checkpointing, the useful part of a crashed attempt is not lost, so for S02 use
   lost_compute_s as "lost work" and report lost_work_s only for comparison with S01.
@@ -164,7 +164,10 @@ New modes added by teammates should reuse these columns and add new columns at t
 - Adaptive mode is told the true MTBF; it does not estimate MTBF from observed failures.
 - Failures happen at iteration boundaries, never in the middle of writing a checkpoint, so the
   double-buffer protection is implemented but not exercised by the experiments.
-- About 1 s of Open MPI failure detection/teardown per failure (measured on a 2-core Linux VM with
-  Open MPI 4.1.6) is the same for every strategy. At this problem size it is comparable to the
-  compute that checkpointing saves, so it limits how much any strategy can gain. Re-check this
-  number on the machine used for the final runs.
+- About 0.5 s of Open MPI failure detection/teardown per failure (Mac, Open MPI 5.0.11) is the
+  same for every strategy. Once the interval is tuned it is the largest remaining cost of a failure,
+  larger than checkpoint writing plus lost compute, and checkpointing cannot reduce it.
+- Per-checkpoint cost is not constant: about 7 ms at K >= 50 but 16-20 ms at K = 10-25, because
+  back-to-back fsyncs queue up. Young's formula assumes a constant C; we use the median.
+- Only 5 seeds per failure configuration. The restart-from-scratch ("none") results vary a lot
+  (sd 3-4 s), so its comparison with checkpointing is directional; the interval trend is clearer.

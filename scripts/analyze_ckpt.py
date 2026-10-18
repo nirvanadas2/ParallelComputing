@@ -56,10 +56,17 @@ t0_compute = ov[ov.strategy == "none"].final_attempt_s.mean()
 ov["overhead_pct"] = 100 * (ov.makespan - t0) / t0
 ov["ckpt_write_pct"] = 100 * ov.ckpt_overhead_s / t0
 per = ov[ov.strategy == "periodic"]
-C_per_ckpt = (per.ckpt_overhead_s / per.ckpts.replace(0, np.nan)).mean()  # seconds
+# Cost of one checkpoint, per interval. Back-to-back checkpoints (small K) cost more each,
+# because fsyncs queue up, so the mean over all K overstates C at realistic intervals.
+# Young's formula uses the median, which is robust to those small-K outliers.
+per = per.assign(c_ms=1e3 * per.ckpt_overhead_s / per.ckpts.replace(0, np.nan))
+c_by_k = per.groupby("ckpt_interval").c_ms.mean()
+C_per_ckpt = per.c_ms.median() / 1e3  # seconds
 t_iter = df.t_iter_s.dropna().mean() if "t_iter_s" in df else t0_compute / df.iters.iloc[0]
 print(f"Failure-free makespan, no checkpoint: {t0:.3f} s")
-print(f"Mean cost of one checkpoint C: {C_per_ckpt*1e3:.1f} ms "
+print("Cost of one checkpoint (ms) by interval K:")
+print(c_by_k.round(2).to_string())
+print(f"Checkpoint cost C used for Young's formula (median): {C_per_ckpt*1e3:.1f} ms "
       f"(= {C_per_ckpt / t_iter:.1f} iterations at {t_iter*1e3:.3f} ms/iter)\n")
 
 og = ov.groupby(["strategy", "ckpt_interval"], dropna=False).agg(
