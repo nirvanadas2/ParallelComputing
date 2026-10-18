@@ -63,6 +63,31 @@ Rank 0 also appends to `<ckpt-dir>/events.log` (wall-clock epoch times, also wri
 that later crash): `ready epoch=.. resumed_from=.. restore_s=..`,
 `commit epoch=.. iter=.. cost_s=.. next_interval=..`, `finish epoch=..`.
 
+### 2b. Fault-tolerant workload (S03, Teammate 3) — src/workload_ft.c
+A copy of workload.c (which stays FROZEN) with the same stencil, the same checkpoint file format
+and the same commit protocol. All three S03 strategies run this one binary, so they log the same
+timestamps. Build: `mpicc -O2 -o workload_ft src/workload_ft.c -lm`. Every workload.c flag still
+works with the same meaning. New flags:
+
+| Flag | Default | Meaning |
+|---|---|---|
+| --ft | relaunch | relaunch = any MPI error kills the job (like workload.c); ulfm = survive failures in place |
+| --spares | 0 | ulfm only: number of spare processes. Launch p + S processes; p compute positions |
+| --fail-plan | (none) | planned failures `F:P,F:P,...`: failure k hits position P at iteration resume_k + floor(F x (iters - resume_k)), resume_k = iteration the run restarted from before failure k |
+| --fail-in-ckpt | 0 | 1 = each planned failure happens inside the first checkpoint written at or after its iteration (rank writes header + half its array, then dies) |
+
+Strategy C (ULFM, needs Open MPI 5 with `--with-ft=ulfm`, run with `mpirun --with-ft ulfm`): on a
+failure the survivors revoke and shrink the communicator, agree (MPIX_Comm_agree) that every step
+succeeded, give each dead position to a spare, rebuild the compute communicator, reload the last
+committed checkpoint and continue. Whoever holds position 0 writes commit.txt, so a dead rank 0 is
+handled the same way. If more positions die than there are spares, the job aborts and the runner
+relaunches it with --restart (falls back to strategy B).
+
+Extra events in events.log: `fail epoch=.. iter=.. pos=.. inckpt=..` (written by the dying process
+just before SIGKILL); after an in-place recovery the `ready` event also carries `inplace=1
+detect_epoch=.. reconf_s=..`. Extra output line: `FT ft=.. spares=.. spares_left=.. recoveries=..
+reconf_s=..`.
+
 ## 3. Metric definitions (what we actually measure)
 - **Makespan**: wall-clock seconds from the first launch of the job until the final successful
   attempt ends, including all crashed attempts and relaunches. Failed runs with no recovery
@@ -92,7 +117,20 @@ that later crash): `ready epoch=.. resumed_from=.. restore_s=..`,
 - **lost_work_s keeps its S01 meaning** (all wall time in crashed attempts), so S01 and S02 rows can
   be compared. With checkpointing, the useful part of a crashed attempt is not lost, so for S02 use
   lost_compute_s as "lost work" and report lost_work_s only for comparison with S01.
-- **Availability proxy** (Teammate 3 to finalise): final successful attempt time / makespan.
+- **Availability proxy** (S03, proposed; replaces "final attempt time / makespan", which breaks for
+  ULFM where there is only one attempt): failure-free makespan of strategy A (no checkpoints, no
+  spares) / actual makespan. 1.0 = no time lost to failures or to resilience overhead.
+- **Recovery time (S03, proposed, one definition for every strategy)**: per failure, wall clock
+  from the `fail` event (process killed) to the next `ready` event (compute resumes). Includes
+  detection for every strategy, plus teardown + relaunch + MPI startup + restore for A/B, and
+  revoke/shrink/reassign + restore for C. S02's recovery_time_s (crashed mpirun exit -> ready) is
+  the A/B part after teardown, so the two are not directly comparable.
+- **Recovery breakdown (S03)**: detect_s = fail -> crashed mpirun exits (A/B, detection + teardown)
+  or fail -> first survivor sees the error (C); relaunch_s = crashed mpirun exits -> ready (A/B);
+  reconf_s = revoke + shrink + reassign (C); restore_s = checkpoint read.
+- **Overhead (S03)**: failure-free makespan of a strategy vs strategy A, in % (checkpoint writes
+  for B and C, plus the spare's effect for C). C also holds S idle spare processes, reported
+  separately as spare_fraction = S / (p + S) of the resources.
 
 Time is never counted twice: makespan = lost work (crashed attempts) + final successful attempt
 (+ small script gaps).
@@ -118,6 +156,16 @@ recovery_time_s_mean, final_interval, N, fsync, detect_teardown_s, t_iter_s
 - strategy is none, periodic or adaptive; ckpt_interval is set for periodic only
 - final_interval is the interval in use at the end (the adaptive K*)
 
+results/recovery_runs.csv (S03). The first 13 columns are exactly the rate_runs.csv columns
+(mtbf_mult is "inf" for failure-free rows and empty for planned-failure rows;
+expected_failures_per_run = planned failures; lost_work_s keeps its S01 meaning, wall time in
+crashed attempts, so it is 0 for C unless C ran out of spares). S03 columns follow:
+scenario, strategy, ckpt_interval, spares, procs, spare_fraction, ckpts, ckpt_overhead_s,
+lost_iters, lost_compute_s, recovery_time_s_total, recovery_time_s_mean, detect_s_mean,
+relaunch_s_mean, reconf_s_mean, restore_s_mean, relaunches, N, fsync, t_iter_s, fail_plan
+- scenario is none (failure-free), single, multi, rank0 or ckpt
+- strategy is restart (A), rollback (B) or ulfm (C)
+
 New modes added by teammates should reuse these columns and add new columns at the END only.
 
 ## 5. Scripts
@@ -128,6 +176,10 @@ New modes added by teammates should reuse these columns and add new columns at t
 - scripts/run_ckpt.py : S02 runner, overhead and failure experiments, appends to results/ckpt_runs.csv
   (`--quick` for a 2-minute smoke test; MPIRUN_EXTRA env var for extra mpirun flags)
 - scripts/analyze_ckpt.py : S02 tables (results/ckpt_summary.csv) and plots (results/plots/ckpt_*.png)
+- scripts/run_recovery.py : S03 runner, strategies A/B/C x scenarios single/multi/rank0/ckpt plus
+  failure-free baselines, appends to results/recovery_runs.csv (`--quick` smoke test)
+- scripts/analyze_recovery.py : S03 table (results/recovery_summary.csv) and plots
+  (results/plots/recovery_*.png)
 
 ## 6. Experiment conventions
 - Sweep size: N = 2,000,000, iters = 5000 (about 13 to 28 s failure-free depending on ranks).
