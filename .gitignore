@@ -1,3 +1,5 @@
 workload
 hello
 __pycache__/
+ckpt/
+ckpt_tmp/
