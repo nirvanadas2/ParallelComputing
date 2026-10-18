@@ -3,3 +3,5 @@ hello
 __pycache__/
 ckpt/
 ckpt_tmp/
+workload_ft
+ckpt_tmp_s03/
